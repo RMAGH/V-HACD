@@ -117,6 +117,7 @@
 #include <array>
 #include <cmath>
 #include <algorithm>
+#include <atomic>
 
 namespace VHACD {
 
@@ -380,6 +381,7 @@ public:
     class Parameters
     {
     public:
+        std::atomic<bool>*  m_abort{nullptr};               // Optional user provided atomic<bool>* to signal an abort of operation
         IUserCallback*      m_callback{nullptr};            // Optional user provided callback interface for progress
         IUserLogger*        m_logger{nullptr};              // Optional user provided callback interface for log messages
         IUserTaskRunner*    m_taskRunner{nullptr};          // Optional user provided interface for creating tasks
@@ -5800,7 +5802,7 @@ public:
     virtual void ProgressUpdate(Stages stage,
                                 double stageProgress,
                                 const char *operation) = 0;
-    virtual bool IsCanceled() const = 0;
+    inline virtual bool IsCanceled() const = 0;
 
     virtual ~VHACDCallbacks() = default;
 };
@@ -6898,7 +6900,7 @@ public:
                         double stageProgress,
                         const char* operation) override final;
 
-    bool IsCanceled() const override final;
+    inline bool IsCanceled() const override final;
 
     std::atomic<bool>                                   m_canceled{ false };
     Parameters                                          m_params; // Convex decomposition parameters
@@ -7127,13 +7129,13 @@ bool VHACDImpl::Compute(const std::vector<VHACD::Vertex>& points,
 #endif
     CopyInputMesh(points,
                   triangles);
-    if ( !m_canceled )
+    if (!IsCanceled())
     {
         // We now recursively perform convex decomposition until complete
         PerformConvexDecomposition();
     }
 
-    if ( m_canceled )
+    if (IsCanceled())
     {
         Clean();
         ret = false;
@@ -7198,7 +7200,7 @@ void VHACDImpl::CopyInputMesh(const std::vector<VHACD::Vertex>& points,
 
         uint32_t dcount = 0;
 
-        for (uint32_t i = 0; i < triangles.size() && !m_canceled; ++i)
+        for (uint32_t i = 0; i < triangles.size() && !IsCanceled(); ++i)
         {
             const VHACD::Triangle& t = triangles[i];
             const VHACD::Vertex& p1 = points[t.mI0];
@@ -7235,7 +7237,7 @@ void VHACDImpl::CopyInputMesh(const std::vector<VHACD::Vertex>& points,
     }
 
     // Create the raycast mesh
-    if ( !m_canceled )
+    if (!IsCanceled())
     {
         ProgressUpdate(Stages::CREATE_RAYCAST_MESH,
                        0,
@@ -7246,7 +7248,7 @@ void VHACDImpl::CopyInputMesh(const std::vector<VHACD::Vertex>& points,
                        100,
                        "RaycastMesh completed");
     }
-    if ( !m_canceled )
+    if (!IsCanceled())
     {
         ProgressUpdate(Stages::VOXELIZING_INPUT_MESH,
                         0,
@@ -7268,7 +7270,7 @@ void VHACDImpl::CopyInputMesh(const std::vector<VHACD::Vertex>& points,
 
     m_inputMesh.m_vertices = m_vertices;
     m_inputMesh.m_indices = m_indices;
-    if ( !m_canceled )
+    if (!IsCanceled())
     {
         ProgressUpdate(Stages::BUILD_INITIAL_CONVEX_HULL,
                         0,
@@ -7340,7 +7342,7 @@ void VHACDImpl::PerformConvexDecomposition()
         // no longer recurse further.
         Timer t;
 
-        while ( !m_pendingHulls.empty() && !m_canceled )
+        while ( !m_pendingHulls.empty() && !IsCanceled())
         {
             size_t count = m_pendingHulls.size() + m_voxelHulls.size();
             double e = t.PeekElapsedSeconds();
@@ -7417,7 +7419,7 @@ void VHACDImpl::PerformConvexDecomposition()
         }
     }
 
-    if ( !m_canceled )
+    if (!IsCanceled())
     {
         // Give each convex hull a unique guid
         m_meshId = 0;
@@ -7431,7 +7433,7 @@ void VHACDImpl::PerformConvexDecomposition()
                        "Initializing ConvexHulls");
         for (auto& vh : m_voxelHulls)
         {
-            if ( m_canceled )
+            if (IsCanceled())
             {
                 break;
             }
@@ -7462,7 +7464,7 @@ void VHACDImpl::PerformConvexDecomposition()
         // desired maximum hull count.
         size_t hullCount = hulls.size();
 
-        if ( hullCount > m_params.m_maxConvexHulls && !m_canceled)
+        if (hullCount > m_params.m_maxConvexHulls && !IsCanceled())
         {
             size_t costMatrixSize = ((hullCount * hullCount) - hullCount) >> 1;
             std::vector<CostTask> tasks;
@@ -7476,11 +7478,11 @@ void VHACDImpl::PerformConvexDecomposition()
             ProgressUpdate(Stages::COMPUTING_COST_MATRIX,
                            0,
                            "Computing Hull Merge Cost Matrix");
-            for (size_t i = 1; i < hullCount && !m_canceled; i++)
+            for (size_t i = 1; i < hullCount && !IsCanceled(); i++)
             {
                 ConvexHull* chA = hulls[i];
 
-                for (size_t j = 0; j < i && !m_canceled; j++)
+                for (size_t j = 0; j < i && !IsCanceled(); j++)
                 {
                     ConvexHull* chB = hulls[j];
 
@@ -7509,7 +7511,7 @@ void VHACDImpl::PerformConvexDecomposition()
                 }
             }
 
-            if ( !m_canceled )
+            if (!IsCanceled())
             {
 #if !VHACD_DISABLE_THREADING
                 if ( m_threadPool )
@@ -7538,7 +7540,7 @@ void VHACDImpl::PerformConvexDecomposition()
                                "Finished cost matrix");
             }
 
-            if ( !m_canceled )
+            if (!IsCanceled())
             {
                 ScopedTime stMerging("Merging Convex Hulls",
                                      m_params.m_logger);
@@ -7552,7 +7554,7 @@ void VHACDImpl::PerformConvexDecomposition()
                 while (    !cancel
                         && m_hulls.size() > m_params.m_maxConvexHulls
                         && !m_hullPairQueue.empty()
-                        && !m_canceled)
+                        && !IsCanceled())
                 {
                     double e = t.PeekElapsedSeconds();
                     if ( e >= double(0.1) )
@@ -7601,7 +7603,7 @@ void VHACDImpl::PerformConvexDecomposition()
                         // add that to the priority queue
                         for (auto& i : m_hulls)
                         {
-                            if ( m_canceled )
+                            if (IsCanceled())
                             {
                                 break;
                             }
@@ -7659,7 +7661,7 @@ void VHACDImpl::PerformConvexDecomposition()
                                "Finalizing results");
                 for (auto& i : m_hulls)
                 {
-                    if ( m_canceled )
+                    if (IsCanceled())
                     {
                         break;
                     }
@@ -7970,7 +7972,7 @@ void VHACDImpl::ProgressUpdate(Stages stage,
 
 bool VHACDImpl::IsCanceled() const
 {
-    return m_canceled;
+    return m_canceled || (m_params.m_abort && *m_params.m_abort);
 }
 
 IVHACD* CreateVHACD(void)
